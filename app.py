@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, timedelta
+from io import StringIO
 
 import numpy as np
 import pandas as pd
@@ -52,11 +53,26 @@ TEXT = {
         "details": "Pilna lentelė",
         "charts": "Kainos kreivė",
         "market_pulse": "Rinkos pulsas",
-        "most_bought": "Daugiausiai perkami 1h",
-        "most_sold": "Daugiausiai parduodami 1h",
+        "market_period": "Rinkos pulso laikotarpis",
+        "market_period_help": "Ilgesnis laikotarpis geriau parodo bendrą paklausą/pardavimą, trumpesnis – kas juda dabar.",
+        "most_bought": "Daugiausiai perkami",
+        "most_sold": "Daugiausiai parduodami",
         "buy_pressure": "Stipriausias pirkimo spaudimas",
         "sell_pressure": "Stipriausias pardavimo spaudimas",
-        "pulse_help": "Čia rodoma, kur šiuo metu daugiausia aktyvumo ir disbalanso pagal 1h high/low volume.",
+        "pulse_help": "Čia rodoma, kur daugiausia aktyvumo ir disbalanso pagal pasirinktą laikotarpį. 1–24h sumuojama iš valandinių duomenų, 3d–30d iš dieninių duomenų.",
+        "death_coffer": "Death Coffer",
+        "death_coffer_help": "Atskira skiltis itemams, kuriuos galimai verta pirkti GE ir įdėti į Death's Coffer. Rodoma pagal coffer value vs instant buy kainą.",
+        "death_source_note": "Death Coffer lentelė naudoja 07.gg Deaths Coffer Tracker duomenis. Visada patikrink official GE price pačiame žaidime prieš pirkdamas didelį kiekį.",
+        "min_coffer_roi": "Min coffer ROI %",
+        "min_coffer_profit": "Min coffer profit / item",
+        "min_coffer_volume": "Min 24h volume",
+        "coffer_value": "Coffer value",
+        "official_ge": "Official GE price",
+        "instabuy": "Instabuy price",
+        "coffer_profit": "Coffer profit",
+        "potential_profit": "Potential profit",
+        "volume_24h": "24h volume",
+        "coffer_empty": "Nepavyko užkrauti Death Coffer duomenų arba pagal filtrus nieko nerasta.",
         "bought": "Nupirkta",
         "sold": "Parduota",
         "pressure": "Spaudimas",
@@ -149,11 +165,26 @@ TEXT = {
         "details": "Full table",
         "charts": "Price curve",
         "market_pulse": "Market Pulse",
-        "most_bought": "Most bought 1h",
-        "most_sold": "Most sold 1h",
+        "market_period": "Market Pulse timeframe",
+        "market_period_help": "Longer timeframes show overall demand/selling better; shorter timeframes show what is moving now.",
+        "most_bought": "Most bought",
+        "most_sold": "Most sold",
         "buy_pressure": "Strongest buy pressure",
         "sell_pressure": "Strongest sell pressure",
-        "pulse_help": "Shows where current activity and imbalance are highest based on 1h high/low volume.",
+        "pulse_help": "Shows where activity and imbalance are highest for the selected timeframe. 1–24h is summed from hourly data, 3d–30d from daily data.",
+        "death_coffer": "Death Coffer",
+        "death_coffer_help": "Separate tab for items that may be worth buying on the GE and sacrificing to Death's Coffer. It compares coffer value vs instant buy price.",
+        "death_source_note": "Death Coffer table uses 07.gg Deaths Coffer Tracker data. Always check the official GE price in-game before buying a large amount.",
+        "min_coffer_roi": "Min coffer ROI %",
+        "min_coffer_profit": "Min coffer profit / item",
+        "min_coffer_volume": "Min 24h volume",
+        "coffer_value": "Coffer value",
+        "official_ge": "Official GE price",
+        "instabuy": "Instabuy price",
+        "coffer_profit": "Coffer profit",
+        "potential_profit": "Potential profit",
+        "volume_24h": "24h volume",
+        "coffer_empty": "Could not load Death Coffer data or no items match these filters.",
         "bought": "Bought",
         "sold": "Sold",
         "pressure": "Pressure",
@@ -214,6 +245,89 @@ TEXT = {
 """,
     },
 }
+
+
+def parse_rs_value(value):
+    """Parse RS-style numbers like 120.6M, 45K, 1,234,567, 20.98%."""
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return np.nan
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(",", "").replace("gp", "").replace("%", "")
+    if text in {"", "-", "nan", "None"}:
+        return np.nan
+    mult = 1
+    if text[-1:].lower() == "k":
+        mult = 1_000
+        text = text[:-1]
+    elif text[-1:].lower() == "m":
+        mult = 1_000_000
+        text = text[:-1]
+    elif text[-1:].lower() == "b":
+        mult = 1_000_000_000
+        text = text[:-1]
+    try:
+        return float(text) * mult
+    except Exception:
+        return np.nan
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_death_coffer(user_agent: str) -> pd.DataFrame:
+    """Load community Death's Coffer opportunities.
+
+    Source page is public and may change layout. If it changes, app shows a friendly message.
+    """
+    url = "https://07.gg/ge/deaths-coffer"
+    r = requests.get(url, headers={"User-Agent": user_agent or DEFAULT_USER_AGENT}, timeout=30)
+    r.raise_for_status()
+    tables = pd.read_html(StringIO(r.text))
+    target = None
+    for table in tables:
+        flat_cols = [" ".join(map(str, c)).strip() if isinstance(c, tuple) else str(c).strip() for c in table.columns]
+        table.columns = flat_cols
+        joined = " ".join(flat_cols).lower()
+        if "coffer" in joined and "item" in joined and ("roi" in joined or "profit" in joined):
+            target = table.copy()
+            break
+    if target is None:
+        return pd.DataFrame()
+
+    def find_col(*needles):
+        for col in target.columns:
+            low = col.lower()
+            if all(n.lower() in low for n in needles):
+                return col
+        return None
+
+    item_col = find_col("item")
+    instabuy_col = find_col("instabuy") or find_col("buy")
+    official_col = find_col("official") or find_col("ge price")
+    coffer_col = find_col("coffer", "value")
+    profit_col = find_col("coffer", "profit") or find_col("profit")
+    potential_col = find_col("potential")
+    roi_col = find_col("roi")
+    volume_col = find_col("volume")
+    limit_col = find_col("limit")
+
+    out = pd.DataFrame()
+    out["name"] = target[item_col].astype(str) if item_col else ""
+    out["instabuy_price"] = target[instabuy_col].apply(parse_rs_value) if instabuy_col else np.nan
+    out["official_ge_price"] = target[official_col].apply(parse_rs_value) if official_col else np.nan
+    out["coffer_value"] = target[coffer_col].apply(parse_rs_value) if coffer_col else np.nan
+    out["coffer_profit"] = target[profit_col].apply(parse_rs_value) if profit_col else (out["coffer_value"] - out["instabuy_price"])
+    out["potential_profit"] = target[potential_col].apply(parse_rs_value) if potential_col else np.nan
+    out["coffer_roi_percent"] = target[roi_col].apply(parse_rs_value) if roi_col else (out["coffer_profit"] / out["instabuy_price"] * 100)
+    out["volume_24h"] = target[volume_col].apply(parse_rs_value) if volume_col else np.nan
+    out["limit"] = target[limit_col].apply(parse_rs_value) if limit_col else np.nan
+
+    out = out.dropna(subset=["name", "instabuy_price", "coffer_value", "coffer_profit"])
+    out = out[out["name"].str.len() > 1]
+    for c in ["instabuy_price", "official_ge_price", "coffer_value", "coffer_profit", "potential_profit", "volume_24h", "limit"]:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    out["coffer_roi_percent"] = pd.to_numeric(out["coffer_roi_percent"], errors="coerce")
+    out = out.sort_values(["coffer_roi_percent", "coffer_profit"], ascending=False)
+    return out
 
 
 def ge_tax(sell_price: int) -> int:
@@ -277,6 +391,87 @@ def load_period(period: str, user_agent: str) -> pd.DataFrame:
             f"sold_{period}": price.get("lowPriceVolume", 0) or 0,
         })
     return pd.DataFrame(rows)
+
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_market_snapshot(period: str, timestamp: int | None, user_agent: str) -> pd.DataFrame:
+    endpoint = period if timestamp is None else f"{period}?timestamp={int(timestamp)}"
+    data = get_json(endpoint, user_agent).get("data", {})
+    rows = []
+    for item_id, price in data.items():
+        rows.append({
+            "id": int(item_id),
+            "avg_high": price.get("avgHighPrice"),
+            "avg_low": price.get("avgLowPrice"),
+            "bought": price.get("highPriceVolume", 0) or 0,
+            "sold": price.get("lowPriceVolume", 0) or 0,
+        })
+    return pd.DataFrame(rows)
+
+
+def _floor_ts(ts: int, seconds: int) -> int:
+    return int(ts - (ts % seconds))
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_market_window(window_key: str, user_agent: str) -> pd.DataFrame:
+    """Aggregate all-item market volume for a selectable Market Pulse window.
+
+    Uses all-item /1h and /24h snapshots. This avoids calling /timeseries for thousands of items.
+    """
+    now_ts = int(pd.Timestamp.now(tz="UTC").timestamp())
+    hourly_windows = {
+        "1h": 1,
+        "2h": 2,
+        "3h": 3,
+        "6h": 6,
+        "12h": 12,
+        "24h": 24,
+    }
+    daily_windows = {
+        "3d": 3,
+        "7d": 7,
+        "14d": 14,
+        "30d": 30,
+    }
+
+    frames = []
+    if window_key in hourly_windows:
+        hours = hourly_windows[window_key]
+        # latest /1h plus previous full hourly snapshots
+        frames.append(load_market_snapshot("1h", None, user_agent))
+        base = _floor_ts(now_ts, 3600)
+        for i in range(1, hours):
+            frames.append(load_market_snapshot("1h", base - i * 3600, user_agent))
+    elif window_key in daily_windows:
+        days = daily_windows[window_key]
+        # latest /24h plus previous daily snapshots
+        frames.append(load_market_snapshot("24h", None, user_agent))
+        base = _floor_ts(now_ts, 86400)
+        for i in range(1, days):
+            frames.append(load_market_snapshot("24h", base - i * 86400, user_agent))
+    else:
+        frames.append(load_market_snapshot("1h", None, user_agent))
+
+    frames = [x for x in frames if x is not None and not x.empty]
+    if not frames:
+        return pd.DataFrame(columns=["id", "bought_period", "sold_period", "volume_period", "avg_high_period", "avg_low_period"])
+
+    combined = pd.concat(frames, ignore_index=True)
+    combined["bought"] = pd.to_numeric(combined["bought"], errors="coerce").fillna(0)
+    combined["sold"] = pd.to_numeric(combined["sold"], errors="coerce").fillna(0)
+    combined["avg_high"] = pd.to_numeric(combined["avg_high"], errors="coerce")
+    combined["avg_low"] = pd.to_numeric(combined["avg_low"], errors="coerce")
+
+    out = combined.groupby("id", as_index=False).agg(
+        bought_period=("bought", "sum"),
+        sold_period=("sold", "sum"),
+        avg_high_period=("avg_high", "mean"),
+        avg_low_period=("avg_low", "mean"),
+    )
+    out["volume_period"] = out["bought_period"] + out["sold_period"]
+    return out
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -503,6 +698,11 @@ with st.sidebar:
     min_buy = st.number_input(t["min_buy"], min_value=1, value=100, step=100)
     max_buy = st.number_input(t["max_buy"], min_value=1, value=50_000_000, step=100_000)
 
+    with st.expander(t["death_coffer"], expanded=False):
+        min_coffer_roi = st.number_input(t["min_coffer_roi"], min_value=-100.0, value=2.0, step=0.5)
+        min_coffer_profit = st.number_input(t["min_coffer_profit"], min_value=-1_000_000, value=1_000, step=500)
+        min_coffer_volume = st.number_input(t["min_coffer_volume"], min_value=0, value=20, step=10)
+
     members_filter = st.selectbox(t["members_filter"], [t["all"], t["members_only"], t["f2p_only"]])
     search = st.text_input(t["search"])
     sort_options = {
@@ -570,17 +770,21 @@ else:
 f["bs_1h"] = f.apply(lambda r: f"{rs_num(r['bought_1h'])} / {rs_num(r['sold_1h'])}", axis=1)
 
 # Market pulse uses a broader set than the main flip table, so it can show what people buy/sell even if it is not a safe flip.
-market = df.copy()
-if members_filter == t["members_only"]:
-    market = market[market["members"] == True]
-elif members_filter == t["f2p_only"]:
-    market = market[market["members"] == False]
-if search.strip():
-    market = market[market["name"].str.contains(search.strip(), case=False, na=False)]
-market = market[market["volume_1h"] > 0].copy()
-market["buy_pressure_percent"] = ((market["bought_1h"] - market["sold_1h"]) / market["volume_1h"].replace(0, np.nan) * 100).fillna(0)
-market["pressure_label"] = market["buy_pressure_percent"].apply(lambda v: pressure_label(v, t))
-market["ai_note"] = market.apply(lambda r: ai_market_note(r, lang), axis=1)
+# Longer Market Pulse windows are aggregated from public all-item /1h and /24h snapshots.
+market_period_options = {
+    "1h": "1h",
+    "2h": "2h",
+    "3h": "3h",
+    "6h": "6h",
+    "12h": "12h",
+    "24h": "24h",
+    "3d": "3d",
+    "7d": "7d",
+    "14d": "14d",
+    "30d": "30d",
+}
+market_period_label = "1h"
+market_window = None
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric(t["candidates"], f"{len(f):,}")
@@ -588,7 +792,7 @@ c2.metric(t["best_profit"], gp(f["profit_per_item"].max()) if not f.empty else "
 c3.metric(t["best_roi"], pct(f["roi_percent"].max()) if not f.empty else "0%")
 c4.metric(t["avg_conf"], f"{f['confidence_score'].mean():.0f}/100" if not f.empty else "0/100")
 
-tab1, tab2, tab3, tab4 = st.tabs([t["recommended"], t["market_pulse"], t["details"], t["charts"]])
+tab1, tab2, tab3, tab4, tab5 = st.tabs([t["recommended"], t["market_pulse"], t["death_coffer"], t["details"], t["charts"]])
 
 simple_cols = [
     "name", "buy_price", "sell_price", "profit_per_item", "roi_percent", "bs_1h", "confidence_label", "risk_label"
@@ -627,13 +831,37 @@ with tab2:
     st.subheader(t["market_pulse"])
     st.caption(t["pulse_help"])
 
+    left, right = st.columns([1, 2])
+    with left:
+        market_period_label = st.selectbox(
+            t["market_period"],
+            list(market_period_options.keys()),
+            index=0,
+            help=t["market_period_help"],
+        )
+
+    with st.spinner(f"{t['market_pulse']} {market_period_label}..."):
+        market_window = load_market_window(market_period_options[market_period_label], user_agent)
+
+    market = df.copy().merge(market_window, on="id", how="left")
+    if members_filter == t["members_only"]:
+        market = market[market["members"] == True]
+    elif members_filter == t["f2p_only"]:
+        market = market[market["members"] == False]
+    if search.strip():
+        market = market[market["name"].str.contains(search.strip(), case=False, na=False)]
+    market = market[market["volume_period"].fillna(0) > 0].copy()
+    market["buy_pressure_percent"] = ((market["bought_period"] - market["sold_period"]) / market["volume_period"].replace(0, np.nan) * 100).fillna(0)
+    market["pressure_label"] = market["buy_pressure_percent"].apply(lambda v: pressure_label(v, t))
+    market["ai_note"] = market.apply(lambda r: ai_market_note(r, lang), axis=1)
+
     def market_table(data):
-        cols = ["name", "bought_1h", "sold_1h", "volume_1h", "buy_pressure_percent", "price_change_percent", "pressure_label", "ai_note"]
+        cols = ["name", "bought_period", "sold_period", "volume_period", "buy_pressure_percent", "price_change_percent", "pressure_label", "ai_note"]
         out = data[cols].head(25).copy()
         styled_market = (
             out.style
             .format({
-                "bought_1h": rs_num, "sold_1h": rs_num, "volume_1h": rs_num,
+                "bought_period": rs_num, "sold_period": rs_num, "volume_period": rs_num,
                 "buy_pressure_percent": pct, "price_change_percent": pct,
             })
             .map(color_num, subset=["buy_pressure_percent", "price_change_percent"])
@@ -645,9 +873,9 @@ with tab2:
             hide_index=True,
             column_config={
                 "name": t["item"],
-                "bought_1h": t["bought"],
-                "sold_1h": t["sold"],
-                "volume_1h": t["vol"],
+                "bought_period": f"{t['bought']} {market_period_label}",
+                "sold_period": f"{t['sold']} {market_period_label}",
+                "volume_period": f"Volume {market_period_label}",
                 "buy_pressure_percent": t["pressure"],
                 "price_change_percent": t["change"],
                 "pressure_label": t["signal"],
@@ -655,19 +883,72 @@ with tab2:
             },
         )
 
-    st.markdown("#### " + t["most_bought"])
-    market_table(market.sort_values("bought_1h", ascending=False))
+    st.markdown(f"#### {t['most_bought']} — {market_period_label}")
+    market_table(market.sort_values("bought_period", ascending=False))
 
-    st.markdown("#### " + t["most_sold"])
-    market_table(market.sort_values("sold_1h", ascending=False))
+    st.markdown(f"#### {t['most_sold']} — {market_period_label}")
+    market_table(market.sort_values("sold_period", ascending=False))
 
-    st.markdown("#### " + t["buy_pressure"])
-    market_table(market[market["volume_1h"] >= max(100, min_volume_1h)].sort_values("buy_pressure_percent", ascending=False))
+    st.markdown(f"#### {t['buy_pressure']} — {market_period_label}")
+    market_table(market[market["volume_period"] >= max(100, min_volume_1h)].sort_values("buy_pressure_percent", ascending=False))
 
-    st.markdown("#### " + t["sell_pressure"])
-    market_table(market[market["volume_1h"] >= max(100, min_volume_1h)].sort_values("buy_pressure_percent", ascending=True))
+    st.markdown(f"#### {t['sell_pressure']} — {market_period_label}")
+    market_table(market[market["volume_period"] >= max(100, min_volume_1h)].sort_values("buy_pressure_percent", ascending=True))
 
 with tab3:
+    st.subheader(t["death_coffer"])
+    st.caption(t["death_coffer_help"])
+    st.info(t["death_source_note"])
+
+    try:
+        coffer = load_death_coffer(user_agent)
+        if search.strip() and not coffer.empty:
+            coffer = coffer[coffer["name"].str.contains(search.strip(), case=False, na=False)]
+        if not coffer.empty:
+            coffer = coffer[coffer["coffer_roi_percent"].fillna(-999) >= min_coffer_roi]
+            coffer = coffer[coffer["coffer_profit"].fillna(-999999999) >= min_coffer_profit]
+            coffer = coffer[coffer["volume_24h"].fillna(0) >= min_coffer_volume]
+            coffer = coffer.head(50)
+        if coffer.empty:
+            st.info(t["coffer_empty"])
+        else:
+            coffer_cols = ["name", "instabuy_price", "official_ge_price", "coffer_value", "coffer_profit", "coffer_roi_percent", "volume_24h", "limit", "potential_profit"]
+            out = coffer[coffer_cols].copy()
+            styled_coffer = (
+                out.style
+                .format({
+                    "instabuy_price": gp,
+                    "official_ge_price": gp,
+                    "coffer_value": gp,
+                    "coffer_profit": gp,
+                    "coffer_roi_percent": pct,
+                    "volume_24h": rs_num,
+                    "limit": rs_num,
+                    "potential_profit": gp,
+                })
+                .map(color_num, subset=["coffer_profit", "coffer_roi_percent", "potential_profit"])
+            )
+            st.dataframe(
+                styled_coffer,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "name": t["item"],
+                    "instabuy_price": t["instabuy"],
+                    "official_ge_price": t["official_ge"],
+                    "coffer_value": t["coffer_value"],
+                    "coffer_profit": t["coffer_profit"],
+                    "coffer_roi_percent": t["roi"],
+                    "volume_24h": t["volume_24h"],
+                    "limit": t["limit"],
+                    "potential_profit": t["potential_profit"],
+                },
+            )
+            st.download_button("Download Death Coffer CSV", data=coffer.to_csv(index=False).encode("utf-8"), file_name=f"death_coffer_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", mime="text/csv")
+    except Exception as exc:
+        st.info(f"{t['coffer_empty']} ({exc})")
+
+with tab4:
     st.subheader(t["details"])
     if f.empty:
         st.info(t["empty"])
@@ -715,7 +996,7 @@ with tab3:
             },
         )
 
-with tab4:
+with tab5:
     st.subheader(t["charts"])
     chart_options = f[["id", "name"]].drop_duplicates().head(250)
     if chart_options.empty:
