@@ -20,7 +20,7 @@ st.set_page_config(page_title="OSRS GE Flipper", page_icon="💰", layout="wide"
 
 TEXT = {
     "LT": {
-        "title": "💰 OSRS GE Flipper",
+        "title": "💰 Plebcity",
         "caption": "Paprastesnis flipping scanneris: aiškus buy/sell, profit, volume, rizika ir kainos kreivė.",
         "filters": "Filtrai",
         "language": "Kalba / Language",
