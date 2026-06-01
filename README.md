@@ -1,36 +1,18 @@
-[README.md](https://github.com/user-attachments/files/28480150/README.md)
-# OSRS GE Flipper v6
+[README.md](https://github.com/user-attachments/files/28480703/README.md)
+# OSRS GE Flipper v8
 
-Streamlit web app for Old School RuneScape Grand Exchange flipping.
+Streamlit web app for OSRS Grand Exchange flipping.
 
-## Features
+## v8 changes
 
-- LT / EN language switch
-- Simple recommended flips table
-- Full advanced table
-- Market Pulse tab:
-  - Most bought 1h
-  - Most sold 1h
-  - Strongest buy pressure
-  - Strongest sell pressure
-  - AI-style rule-based notes
-- Confidence and risk labels
-- 5m / 1h volume filters
-- Price chart with green/red trend line
-- Auto refresh
-- RuneScape style number formatting: K / M / B
-
-## Run locally
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
+- Market Pulse has timeframe selector: 1h, 2h, 3h, 6h, 12h, 24h, 3d, 7d, 14d, 30d.
+- Added separate Death Coffer tab.
+- Death Coffer tab shows instabuy price, official GE price, coffer value, coffer profit, ROI, 24h volume, limit and potential profit.
+- Added Death Coffer filters in sidebar: min ROI, min profit and min 24h volume.
+- Keeps LT / EN, safe mode, auto-refresh, price charts, confidence and risk labels.
 
 ## Deploy
 
-Upload these files to GitHub and deploy on Streamlit Community Cloud:
+Main file path: `app.py`
 
-- `app.py`
-- `requirements.txt`
-- `.streamlit/config.toml`
+Requirements are in `requirements.txt`.
