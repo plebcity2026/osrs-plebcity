@@ -1,21 +1,16 @@
-[README.md](https://github.com/user-attachments/files/28479326/README.md)
-# OSRS GE Flipper Dashboard v4
+[README.md](https://github.com/user-attachments/files/28479793/README.md)
+# OSRS GE Flipper v5
 
-Streamlit web app for Old School RuneScape Grand Exchange flipping.
+Simplified bilingual OSRS Grand Exchange flipping dashboard.
 
-## Features
+## What changed in v5
 
-- LT / EN language switch
-- RuneScape-style number formatting: 100K, 1.5M, 2.5B
-- Auto refresh
-- Manual refresh
-- GE tax calculation
-- Suggested buy near / sell near prices based on latest low/high trades
-- Bought / sold volume columns for 5m and 1h
-- Confidence score based on volume, recent trade freshness, ROI, profit after tax and 5m margin
-- Green / red price movement colors
-- Price trend charts with 24h, 7d, 30d and 1y views
-- CSV export
+- Main table is now much simpler and fits better on screen.
+- Full detailed table moved to a separate tab.
+- Added Safe mode / lower-risk mode.
+- Added risk label and risk score.
+- Added stricter filters for stale trades, low 5m volume and confidence.
+- Kept LT / EN language, K/M/B formatting, auto-refresh and price charts.
 
 ## Run locally
 
@@ -26,15 +21,10 @@ streamlit run app.py
 
 ## Deploy
 
-Upload these files to GitHub and deploy with Streamlit Community Cloud:
+Upload/replace these files in GitHub:
 
-- app.py
-- requirements.txt
-- README.md
-- .streamlit/config.toml
+- `app.py`
+- `requirements.txt`
+- `README.md`
 
-Main file path:
-
-```text
-app.py
-```
+Then wait for Streamlit to redeploy or reboot the app.
