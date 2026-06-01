@@ -21,7 +21,7 @@ st.set_page_config(page_title="OSRS GE Flipper", page_icon="💰", layout="wide"
 TEXT = {
     "LT": {
         "title": "💰 Plebcity",
-        "caption": "Paprastesnis flipping scanneris: aiškus buy/sell, profit, volume, rizika ir kainos kreivė.",
+        "caption": "Paprastesnis flipping scanneris: buy/sell, profit, volume, rizika, kainos kreivė ir rinkos pulsas.",
         "filters": "Filtrai",
         "language": "Kalba / Language",
         "bankroll": "Tavo bankroll GP",
@@ -51,6 +51,20 @@ TEXT = {
         "recommended": "Rekomenduojami flipai",
         "details": "Pilna lentelė",
         "charts": "Kainos kreivė",
+        "market_pulse": "Rinkos pulsas",
+        "most_bought": "Daugiausiai perkami 1h",
+        "most_sold": "Daugiausiai parduodami 1h",
+        "buy_pressure": "Stipriausias pirkimo spaudimas",
+        "sell_pressure": "Stipriausias pardavimo spaudimas",
+        "pulse_help": "Čia rodoma, kur šiuo metu daugiausia aktyvumo ir disbalanso pagal 1h high/low volume.",
+        "bought": "Nupirkta",
+        "sold": "Parduota",
+        "pressure": "Spaudimas",
+        "signal": "Signalas",
+        "ai_note": "AI pastaba",
+        "demand_buy": "Buy pressure",
+        "demand_sell": "Sell pressure",
+        "demand_neutral": "Neutralu",
         "how_to": "Kaip naudoti ir mažinti riziką",
         "download": "Atsisiųsti CSV",
         "candidates": "Rasta",
@@ -104,7 +118,7 @@ TEXT = {
     },
     "EN": {
         "title": "💰 OSRS GE Flipper",
-        "caption": "Simpler flipping scanner: clear buy/sell targets, profit, volume, risk and price curve.",
+        "caption": "Simpler flipping scanner: buy/sell targets, profit, volume, risk, price curve and market pulse.",
         "filters": "Filters",
         "language": "Language / Kalba",
         "bankroll": "Your bankroll GP",
@@ -134,6 +148,20 @@ TEXT = {
         "recommended": "Recommended flips",
         "details": "Full table",
         "charts": "Price curve",
+        "market_pulse": "Market Pulse",
+        "most_bought": "Most bought 1h",
+        "most_sold": "Most sold 1h",
+        "buy_pressure": "Strongest buy pressure",
+        "sell_pressure": "Strongest sell pressure",
+        "pulse_help": "Shows where current activity and imbalance are highest based on 1h high/low volume.",
+        "bought": "Bought",
+        "sold": "Sold",
+        "pressure": "Pressure",
+        "signal": "Signal",
+        "ai_note": "AI note",
+        "demand_buy": "Buy pressure",
+        "demand_sell": "Sell pressure",
+        "demand_neutral": "Neutral",
         "how_to": "How to use and lower risk",
         "download": "Download CSV",
         "candidates": "Found",
@@ -386,6 +414,54 @@ def color_conf(value):
     return ""
 
 
+def pressure_label(value, t):
+    try:
+        v = float(value)
+    except Exception:
+        return t["demand_neutral"]
+    if v >= 25:
+        return "🟢 " + t["demand_buy"]
+    if v <= -25:
+        return "🔴 " + t["demand_sell"]
+    return "🟡 " + t["demand_neutral"]
+
+
+def ai_market_note(row, lang):
+    pressure = row.get("buy_pressure_percent", 0)
+    vol = row.get("volume_1h", 0)
+    change = row.get("price_change_percent", 0)
+    profit = row.get("profit_per_item", 0)
+    conf = row.get("confidence_score", 0)
+    if lang == "LT":
+        if vol < 100:
+            return "Mažas volume — atsargiai, orderiai gali ilgai stovėti."
+        if pressure >= 35 and change > 0:
+            return "Daug perka ir kaina kyla — stebėti momentum, bet nepirkti per aukštai."
+        if pressure >= 35 and profit > 0 and conf >= 65:
+            return "Stipri paklausa + teigiamas margin — galimas greitesnis flipas."
+        if pressure <= -35 and change < 0:
+            return "Daug parduoda ir kaina krenta — didesnė crash rizika."
+        if pressure <= -35:
+            return "Pardavimo spaudimas — geriau laukti žemesnės buy kainos."
+        if profit > 0 and conf >= 70:
+            return "Subalansuotas aktyvumas ir aukštas patikimumas — saugesnis kandidatas."
+        return "Neutralus signalas — tikrinti volume, spread ir paskutinio trade amžių."
+    else:
+        if vol < 100:
+            return "Low volume — be careful, orders may sit for a long time."
+        if pressure >= 35 and change > 0:
+            return "Heavy buying and price rising — watch momentum, avoid overpaying."
+        if pressure >= 35 and profit > 0 and conf >= 65:
+            return "Strong demand + positive margin — possible faster flip."
+        if pressure <= -35 and change < 0:
+            return "Heavy selling and price falling — higher crash risk."
+        if pressure <= -35:
+            return "Sell pressure — better to wait for a lower buy price."
+        if profit > 0 and conf >= 70:
+            return "Balanced activity and high confidence — safer candidate."
+        return "Neutral signal — check volume, spread and last trade age."
+
+
 def row_tint(row):
     val = row.get("price_change_percent", 0)
     try:
@@ -493,17 +569,26 @@ else:
 
 f["bs_1h"] = f.apply(lambda r: f"{rs_num(r['bought_1h'])} / {rs_num(r['sold_1h'])}", axis=1)
 
+# Market pulse uses a broader set than the main flip table, so it can show what people buy/sell even if it is not a safe flip.
+market = df.copy()
+if members_filter == t["members_only"]:
+    market = market[market["members"] == True]
+elif members_filter == t["f2p_only"]:
+    market = market[market["members"] == False]
+if search.strip():
+    market = market[market["name"].str.contains(search.strip(), case=False, na=False)]
+market = market[market["volume_1h"] > 0].copy()
+market["buy_pressure_percent"] = ((market["bought_1h"] - market["sold_1h"]) / market["volume_1h"].replace(0, np.nan) * 100).fillna(0)
+market["pressure_label"] = market["buy_pressure_percent"].apply(lambda v: pressure_label(v, t))
+market["ai_note"] = market.apply(lambda r: ai_market_note(r, lang), axis=1)
+
 c1, c2, c3, c4 = st.columns(4)
 c1.metric(t["candidates"], f"{len(f):,}")
 c2.metric(t["best_profit"], gp(f["profit_per_item"].max()) if not f.empty else "0 gp")
 c3.metric(t["best_roi"], pct(f["roi_percent"].max()) if not f.empty else "0%")
 c4.metric(t["avg_conf"], f"{f['confidence_score'].mean():.0f}/100" if not f.empty else "0/100")
 
-if f.empty:
-    st.info(t["empty"])
-    st.stop()
-
-tab1, tab2, tab3 = st.tabs([t["recommended"], t["details"], t["charts"]])
+tab1, tab2, tab3, tab4 = st.tabs([t["recommended"], t["market_pulse"], t["details"], t["charts"]])
 
 simple_cols = [
     "name", "buy_price", "sell_price", "profit_per_item", "roi_percent", "bs_1h", "confidence_label", "risk_label"
@@ -511,78 +596,131 @@ simple_cols = [
 
 with tab1:
     st.subheader(t["recommended"])
-    simple = f[simple_cols].copy()
-    styled = (
-        simple.style
-        .format({"buy_price": gp, "sell_price": gp, "profit_per_item": gp, "roi_percent": pct})
-        .map(color_num, subset=["profit_per_item", "roi_percent"])
-        .map(color_conf, subset=["confidence_label", "risk_label"])
-    )
-    st.dataframe(
-        styled,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "name": t["item"],
-            "buy_price": t["buy"],
-            "sell_price": t["sell"],
-            "profit_per_item": t["profit"],
-            "roi_percent": t["roi"],
-            "bs_1h": t["bs_1h"],
-            "confidence_label": t["conf"],
-            "risk_label": t["risk"],
-        },
-    )
+    if f.empty:
+        st.info(t["empty"])
+    else:
+        simple = f[simple_cols].copy()
+        styled = (
+            simple.style
+            .format({"buy_price": gp, "sell_price": gp, "profit_per_item": gp, "roi_percent": pct})
+            .map(color_num, subset=["profit_per_item", "roi_percent"])
+            .map(color_conf, subset=["confidence_label", "risk_label"])
+        )
+        st.dataframe(
+            styled,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "name": t["item"],
+                "buy_price": t["buy"],
+                "sell_price": t["sell"],
+                "profit_per_item": t["profit"],
+                "roi_percent": t["roi"],
+                "bs_1h": t["bs_1h"],
+                "confidence_label": t["conf"],
+                "risk_label": t["risk"],
+            },
+        )
     st.warning(t["warning"])
 
 with tab2:
-    st.subheader(t["details"])
-    detail_cols = [
-        "name", "buy_price", "sell_price", "tax", "profit_per_item", "roi_percent", "price_change_percent",
-        "confidence_score", "risk_score", "limit", "flip_qty", "profit_with_bankroll", "bought_5m", "sold_5m",
-        "bought_1h", "sold_1h", "volume_5m", "volume_1h", "minutes_since_trade", "momentum_percent", "flip_score"
-    ]
-    detail = f[detail_cols].copy()
-    styled_detail = (
-        detail.style
-        .format({
-            "buy_price": gp, "sell_price": gp, "tax": gp, "profit_per_item": gp,
-            "profit_with_bankroll": gp, "roi_percent": pct, "price_change_percent": pct,
-            "momentum_percent": pct, "confidence_score": lambda v: f"{v:.0f}/100",
-            "risk_score": lambda v: f"{v:.0f}/100", "limit": rs_num, "flip_qty": rs_num,
-            "bought_5m": rs_num, "sold_5m": rs_num, "bought_1h": rs_num, "sold_1h": rs_num,
-            "volume_5m": rs_num, "volume_1h": rs_num, "minutes_since_trade": mins,
-            "flip_score": lambda v: f"{v:.1f}",
-        })
-        .apply(row_tint, axis=1)
-        .map(color_num, subset=["profit_per_item", "roi_percent", "price_change_percent", "momentum_percent", "profit_with_bankroll"])
-    )
-    st.dataframe(
-        styled_detail,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "name": t["item"],
-            "buy_price": t["buy"],
-            "sell_price": t["sell"],
-            "tax": t["tax"],
-            "profit_per_item": t["profit"],
-            "roi_percent": t["roi"],
-            "price_change_percent": t["change"],
-            "confidence_score": t["conf"],
-            "risk_score": t["risk"],
-            "limit": t["limit"],
-            "flip_qty": t["qty"],
-            "profit_with_bankroll": t["bank_profit"],
-            "minutes_since_trade": t["last_trade"],
-            "momentum_percent": t["momentum"],
-            "flip_score": t["score"],
-        },
-    )
+    st.subheader(t["market_pulse"])
+    st.caption(t["pulse_help"])
+
+    def market_table(data):
+        cols = ["name", "bought_1h", "sold_1h", "volume_1h", "buy_pressure_percent", "price_change_percent", "pressure_label", "ai_note"]
+        out = data[cols].head(25).copy()
+        styled_market = (
+            out.style
+            .format({
+                "bought_1h": rs_num, "sold_1h": rs_num, "volume_1h": rs_num,
+                "buy_pressure_percent": pct, "price_change_percent": pct,
+            })
+            .map(color_num, subset=["buy_pressure_percent", "price_change_percent"])
+            .map(color_conf, subset=["pressure_label"])
+        )
+        st.dataframe(
+            styled_market,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "name": t["item"],
+                "bought_1h": t["bought"],
+                "sold_1h": t["sold"],
+                "volume_1h": t["vol"],
+                "buy_pressure_percent": t["pressure"],
+                "price_change_percent": t["change"],
+                "pressure_label": t["signal"],
+                "ai_note": t["ai_note"],
+            },
+        )
+
+    st.markdown("#### " + t["most_bought"])
+    market_table(market.sort_values("bought_1h", ascending=False))
+
+    st.markdown("#### " + t["most_sold"])
+    market_table(market.sort_values("sold_1h", ascending=False))
+
+    st.markdown("#### " + t["buy_pressure"])
+    market_table(market[market["volume_1h"] >= max(100, min_volume_1h)].sort_values("buy_pressure_percent", ascending=False))
+
+    st.markdown("#### " + t["sell_pressure"])
+    market_table(market[market["volume_1h"] >= max(100, min_volume_1h)].sort_values("buy_pressure_percent", ascending=True))
 
 with tab3:
+    st.subheader(t["details"])
+    if f.empty:
+        st.info(t["empty"])
+    else:
+        detail_cols = [
+            "name", "buy_price", "sell_price", "tax", "profit_per_item", "roi_percent", "price_change_percent",
+            "confidence_score", "risk_score", "limit", "flip_qty", "profit_with_bankroll", "bought_5m", "sold_5m",
+            "bought_1h", "sold_1h", "volume_5m", "volume_1h", "minutes_since_trade", "momentum_percent", "flip_score"
+        ]
+        detail = f[detail_cols].copy()
+        styled_detail = (
+            detail.style
+            .format({
+                "buy_price": gp, "sell_price": gp, "tax": gp, "profit_per_item": gp,
+                "profit_with_bankroll": gp, "roi_percent": pct, "price_change_percent": pct,
+                "momentum_percent": pct, "confidence_score": lambda v: f"{v:.0f}/100",
+                "risk_score": lambda v: f"{v:.0f}/100", "limit": rs_num, "flip_qty": rs_num,
+                "bought_5m": rs_num, "sold_5m": rs_num, "bought_1h": rs_num, "sold_1h": rs_num,
+                "volume_5m": rs_num, "volume_1h": rs_num, "minutes_since_trade": mins,
+                "flip_score": lambda v: f"{v:.1f}",
+            })
+            .apply(row_tint, axis=1)
+            .map(color_num, subset=["profit_per_item", "roi_percent", "price_change_percent", "momentum_percent", "profit_with_bankroll"])
+        )
+        st.dataframe(
+            styled_detail,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "name": t["item"],
+                "buy_price": t["buy"],
+                "sell_price": t["sell"],
+                "tax": t["tax"],
+                "profit_per_item": t["profit"],
+                "roi_percent": t["roi"],
+                "price_change_percent": t["change"],
+                "confidence_score": t["conf"],
+                "risk_score": t["risk"],
+                "limit": t["limit"],
+                "flip_qty": t["qty"],
+                "profit_with_bankroll": t["bank_profit"],
+                "minutes_since_trade": t["last_trade"],
+                "momentum_percent": t["momentum"],
+                "flip_score": t["score"],
+            },
+        )
+
+with tab4:
     st.subheader(t["charts"])
     chart_options = f[["id", "name"]].drop_duplicates().head(250)
+    if chart_options.empty:
+        st.info(t["empty"])
+        st.stop()
     name_to_id = dict(zip(chart_options["name"], chart_options["id"]))
     col_a, col_b, col_c = st.columns([2, 1, 1])
     with col_a:
