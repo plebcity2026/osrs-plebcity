@@ -1,5 +1,6 @@
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
@@ -57,8 +58,10 @@ TEXT = {
         "download": "Atsisiųsti filtruotą CSV",
         "how_to": "Kaip skaityti lentelę",
         "how_to_md": """
-        - **Buy price** = latest low price. Dažnai naudojama kaip target buy / instasell pusė.
-        - **Sell price** = latest high price. Dažnai naudojama kaip target sell / instabuy pusė.
+        - **Siūloma pirkti apie** = latest low price. Tai yra target buy zona pagal paskutinius low trades.
+        - **Siūloma parduoti apie** = latest high price. Tai yra target sell zona pagal paskutinius high trades.
+        - **Nupirkta / parduota** = kiek volume buvo užfiksuota prie high / low pusės per 5m arba 1h. Tai apytikslis likvidumo signalas, ne oficialus Jagex kiekis.
+        - **Patikimumas** = score pagal volume, kainos šviežumą, profitą po tax, ROI ir ar 5m margin dar teigiamas.
         - **Profit / item** = sell price - GE tax - buy price.
         - **Volume** svarbu: didelis marginas su mažu volume dažnai yra spąstai.
         - **Momentum** rodo, ar 5 min vidurkis aukščiau / žemiau 1 h vidurkio.
@@ -84,6 +87,18 @@ TEXT = {
         "rising": "Kyla",
         "falling": "Krenta",
         "stable": "Stabilu",
+        "confidence": "Patikimumas",
+        "confidence_score": "Patikimumo score",
+        "high_confidence": "Aukštas",
+        "medium_confidence": "Vidutinis",
+        "low_confidence": "Žemas",
+        "bought_1h": "Nupirkta 1h",
+        "sold_1h": "Parduota 1h",
+        "bought_5m": "Nupirkta 5m",
+        "sold_5m": "Parduota 5m",
+        "suggested_buy": "Siūloma pirkti apie",
+        "suggested_sell": "Siūloma parduoti apie",
+        "last_trade_age": "Pask. trade min",
     },
     "EN": {
         "title": "💰 OSRS Grand Exchange Flipping Dashboard",
@@ -119,8 +134,10 @@ TEXT = {
         "download": "Download filtered CSV",
         "how_to": "How to read the table",
         "how_to_md": """
-        - **Buy price** = latest low price. Often used as a target buy / instant-sell side.
-        - **Sell price** = latest high price. Often used as a target sell / instant-buy side.
+        - **Suggested buy near** = latest low price. This is a target buy zone based on recent low trades.
+        - **Suggested sell near** = latest high price. This is a target sell zone based on recent high trades.
+        - **Bought / sold** = volume seen on the high / low side over 5m or 1h. It is an approximate liquidity signal, not official Jagex volume.
+        - **Confidence** = a score based on volume, price freshness, post-tax profit, ROI and whether the 5m margin is still positive.
         - **Profit / item** = sell price - GE tax - buy price.
         - **Volume** matters: a large margin with low volume is often a trap.
         - **Momentum** shows whether the 5 min average is above or below the 1 h average.
@@ -146,6 +163,18 @@ TEXT = {
         "rising": "Rising",
         "falling": "Falling",
         "stable": "Stable",
+        "confidence": "Confidence",
+        "confidence_score": "Confidence score",
+        "high_confidence": "High",
+        "medium_confidence": "Medium",
+        "low_confidence": "Low",
+        "bought_1h": "Bought 1h",
+        "sold_1h": "Sold 1h",
+        "bought_5m": "Bought 5m",
+        "sold_5m": "Sold 5m",
+        "suggested_buy": "Suggested buy near",
+        "suggested_sell": "Suggested sell near",
+        "last_trade_age": "Last trade min",
     },
 }
 
@@ -265,8 +294,12 @@ def build_flips(user_agent: str, bankroll_gp: int) -> pd.DataFrame:
     df = df.merge(one_hour, on="id", how="left")
 
     df["limit"] = df["limit"].fillna(1).astype(int)
-    df["volume_5m"] = df["volume_high_5m"].fillna(0) + df["volume_low_5m"].fillna(0)
-    df["volume_1h"] = df["volume_high_1h"].fillna(0) + df["volume_low_1h"].fillna(0)
+    df["bought_5m"] = df["volume_high_5m"].fillna(0)
+    df["sold_5m"] = df["volume_low_5m"].fillna(0)
+    df["bought_1h"] = df["volume_high_1h"].fillna(0)
+    df["sold_1h"] = df["volume_low_1h"].fillna(0)
+    df["volume_5m"] = df["bought_5m"] + df["sold_5m"]
+    df["volume_1h"] = df["bought_1h"] + df["sold_1h"]
 
     df["tax"] = df["sell_price"].apply(ge_tax)
     df["profit_per_item"] = df["sell_price"] - df["tax"] - df["buy_price"]
@@ -288,6 +321,27 @@ def build_flips(user_agent: str, bankroll_gp: int) -> pd.DataFrame:
 
     df["last_high_trade"] = pd.to_datetime(df["high_time"], unit="s", utc=True, errors="coerce")
     df["last_low_trade"] = pd.to_datetime(df["low_time"], unit="s", utc=True, errors="coerce")
+    df["last_trade_time"] = df[["last_high_trade", "last_low_trade"]].max(axis=1)
+    now_utc = pd.Timestamp.now(tz="UTC")
+    df["minutes_since_trade"] = ((now_utc - df["last_trade_time"]).dt.total_seconds() / 60).fillna(9999)
+
+    avg_high_5m_numeric = pd.to_numeric(df["avg_high_5m"], errors="coerce")
+    avg_low_5m_numeric = pd.to_numeric(df["avg_low_5m"], errors="coerce")
+    df["recent_profit_per_item"] = avg_high_5m_numeric - avg_low_5m_numeric - avg_high_5m_numeric.fillna(0).apply(lambda x: ge_tax(int(x)) if x > 0 else 0)
+
+    df["confidence_score"] = (
+        np.minimum(df["volume_1h"] / 2000, 1) * 25
+        + np.minimum(df["volume_5m"] / 200, 1) * 15
+        + np.where(df["profit_per_item"] > 0, 15, 0)
+        + np.minimum(df["roi_percent"].clip(lower=0) / 2, 1) * 15
+        + np.where(df["minutes_since_trade"] <= 15, 15, np.where(df["minutes_since_trade"] <= 60, 8, 0))
+        + np.where(df["recent_profit_per_item"] > 0, 15, 0)
+    ).round(0).astype(int)
+    df["confidence_label"] = np.select(
+        [df["confidence_score"] >= 70, df["confidence_score"] >= 45],
+        ["High", "Medium"],
+        default="Low",
+    )
 
     df["flip_score"] = (
         df["profit_per_item"] * 0.45
@@ -336,6 +390,16 @@ def color_positive_negative(value):
     if number < 0:
         return "color: #dc2626; font-weight: 700"
     return "color: #6b7280"
+
+
+def color_confidence(value):
+    if value in ("High", "Aukštas"):
+        return "color: #16a34a; font-weight: 700"
+    if value in ("Medium", "Vidutinis"):
+        return "color: #ca8a04; font-weight: 700"
+    if value in ("Low", "Žemas"):
+        return "color: #dc2626; font-weight: 700"
+    return ""
 
 
 def row_market_color(row):
@@ -422,6 +486,12 @@ if search.strip():
 filtered = filtered.sort_values(sort_by, ascending=False).head(top_n)
 
 display_filtered = filtered.copy()
+if lang == "LT" and not display_filtered.empty:
+    display_filtered["confidence_label"] = display_filtered["confidence_label"].replace({
+        "High": t["high_confidence"],
+        "Medium": t["medium_confidence"],
+        "Low": t["low_confidence"],
+    })
 # Numeric columns stay numeric so Streamlit can color percentages and profits.
 # RuneScape-style K/M/B formatting is applied with Styler below.
 
@@ -442,10 +512,16 @@ display_cols = [
     "name",
     "buy_price",
     "sell_price",
+    "confidence_label",
+    "confidence_score",
     "tax",
     "profit_per_item",
     "roi_percent",
     "limit",
+    "bought_5m",
+    "sold_5m",
+    "bought_1h",
+    "sold_1h",
     "volume_5m",
     "volume_1h",
     "flip_qty",
@@ -464,12 +540,18 @@ formatters = {
     "profit_per_item": format_gp,
     "profit_with_bankroll": format_gp,
     "limit": lambda v: format_rs_number(v),
+    "bought_5m": lambda v: format_rs_number(v),
+    "sold_5m": lambda v: format_rs_number(v),
+    "bought_1h": lambda v: format_rs_number(v),
+    "sold_1h": lambda v: format_rs_number(v),
     "volume_5m": lambda v: format_rs_number(v),
     "volume_1h": lambda v: format_rs_number(v),
     "flip_qty": lambda v: format_rs_number(v),
     "roi_percent": lambda v: f"{v:.2f}%",
     "momentum_percent": lambda v: "n/a" if pd.isna(v) else f"{v:.2f}%",
     "price_change_percent": lambda v: "n/a" if pd.isna(v) else f"{v:.2f}%",
+    "confidence_score": lambda v: f"{v:.0f}/100",
+    "minutes_since_trade": lambda v: f"{v:.0f}m",
     "flip_score": lambda v: f"{v:.2f}",
 }
 
@@ -479,6 +561,7 @@ styled_table = (
     .format(formatters)
     .apply(row_market_color, axis=1)
     .map(color_positive_negative, subset=["profit_per_item", "roi_percent", "momentum_percent", "price_change_percent", "profit_with_bankroll"])
+    .map(color_confidence, subset=["confidence_label"])
 )
 
 st.dataframe(
@@ -487,13 +570,19 @@ st.dataframe(
     hide_index=True,
     column_config={
         "name": t["item"],
-        "buy_price": t["buy_price"],
-        "sell_price": t["sell_price"],
+        "buy_price": t["suggested_buy"],
+        "sell_price": t["suggested_sell"],
+        "confidence_label": t["confidence"],
+        "confidence_score": t["confidence_score"],
         "tax": t["tax"],
         "profit_per_item": t["profit_item"],
         "roi_percent": "ROI %",
         "price_change_percent": t["price_change"],
         "limit": "Limit",
+        "bought_5m": t["bought_5m"],
+        "sold_5m": t["sold_5m"],
+        "bought_1h": t["bought_1h"],
+        "sold_1h": t["sold_1h"],
         "volume_5m": "Volume 5m",
         "volume_1h": "Volume 1h",
         "flip_qty": "Flip qty",
